@@ -1,0 +1,64 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "(gdb) Launch",
+        "type": "lldb",
+        "request": "launch",
+        "program": "${workspaceFolder}/target/debug/zeptwo",
+        "args": ["src/main.zp"],
+        "cwd": "${workspaceFolder}",
+        "stopOnEntry": false,
+        "sourceLanguages": ["rust"],
+        "preLaunchTask": "cargo build"
+      }
+    ]
+  }
+  
+
+
+// {
+//     // Use IntelliSense to learn about possible attributes.
+//     // Hover to view descriptions of existing attributes.
+//     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+//     "version": "0.2.0",
+//     "configurations": [
+//         {
+//             "type": "lldb",
+//             "request": "launch",
+//             "name": "Debug executable 'zeptwo'",
+//             "cargo": {
+//                 "args": [
+//                     "build",
+//                     "--bin=zeptwo",
+//                     "--package=zeptwo"
+//                 ],
+//                 "filter": {
+//                     "name": "zeptwo",
+//                     "kind": "bin"
+//                 }
+//             },
+//             "args": [],
+//             "cwd": "${workspaceFolder}"
+//         },
+//         {
+//             "type": "lldb",
+//             "request": "launch",
+//             "name": "Debug unit tests in executable 'zeptwo'",
+//             "cargo": {
+//                 "args": [
+//                     "test",
+//                     "--no-run",
+//                     "--bin=zeptwo",
+//                     "--package=zeptwo"
+//                 ],
+//                 "filter": {
+//                     "name": "zeptwo",
+//                     "kind": "bin"
+//                 }
+//             },
+//             "args": [],
+//             "cwd": "${workspaceFolder}"
+//         }
+//     ]
+// }

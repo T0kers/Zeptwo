@@ -1,0 +1,31 @@
+
+let a: [int#3] = [2# 2, 4];
+
+let b: [3 of int, str, flt #*2] = [2 #*3, "hello", 4.2, 6.9];
+
+func test[A, B, C](a: A, b: B) -> C (
+    
+)
+
+test[int, int, int](2, 3)
+
+struct
+choice
+extend
+attrib
+
+attrib Hello {
+    fn hello();
+}
+
+struct Dog {
+    name: string
+}
+
+extend Dog with Hello {
+
+}
+
+if a == 2 (
+    
+)
