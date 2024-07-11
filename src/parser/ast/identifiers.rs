@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 macro_rules! newtype_index {
     ($name:ident, $index_type:ty) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Copy)]
+        #[derive(Debug, Clone, PartialEq, Eq, Copy, Hash)]
         pub struct $name(usize);
 
         impl $name {
@@ -37,19 +37,32 @@ pub struct IdentifierLookup {
     pub ambiguous_function_vec: Vec<Vec<FunctionID>>,
     pub ambiguous_function_map: HashMap<&'static str, AmbiguousFunctionID>,
     pub function_id_vec: Vec<FunctionInfo>,
+    pub global_variable_definitions: Vec<Stmt>,
     pub scope_identifier_map: Vec<HashMap<&'static str, IdentifierID>>,
 }
 
 impl IdentifierLookup {
     pub fn check_types(&mut self) -> Result<(), ZeptwoError> {
+        let mut dependencies = vec![];
+        for global in &mut self.global_variable_definitions.clone() {
+            global.check_types(self, &mut dependencies)?;
+            if !dependencies.is_empty() {
+                Err(ZeptwoError::parser_error_at_pos(global.left_pos(self), "Initial value of global variable can not call user defined functions."))?
+            }
+        }
         let mut functions = self.function_id_vec.clone();
         for function in &mut functions {
-            function.check_types(self)?;
+            function.check_types(self, &mut dependencies)?;
         }
         self.function_id_vec = functions;
         Ok(())
     }
     pub fn determine_size_and_indexes(&mut self) -> Result<(), ZeptwoError> {
+        let mut global_index = 0;
+        for global in &mut self.global_variable_definitions.clone() {
+            global.determine_size_and_indexes(&mut global_index, self)?;
+        }
+
         let mut functions = self.function_id_vec.clone();
         for function in &mut functions {
             let mut stack_index = 0;
@@ -63,6 +76,7 @@ impl IdentifierLookup {
         lexeme: &'static str,
         data_type: Option<ValType>,
         pos: Pos,
+        is_global: bool
     ) -> VariableID {
         let id = VariableID::next_id(&self.variable_info_vec);
 
@@ -74,6 +88,7 @@ impl IdentifierLookup {
             data_type,
             stack_index: None,
             declared_pos: pos,
+            is_global,
         });
 
         id
@@ -97,16 +112,6 @@ impl IdentifierLookup {
     pub fn var_pos(&self, id: VariableID) -> Pos {
         self.variable_info_vec[id].declared_pos
     }
-
-    // fn determine_size_and_indexes(
-    //     &mut self,
-    //     stack_index: &mut usize,
-    // ) -> Result<usize, ZeptwoError> {
-    //     self.set_stack_index(*stack_index);
-    //     let size = self.get_variable_type().unwrap().get_result_size() as usize;
-    //     *stack_index += size;
-    //     Ok(size)
-    // }
 
     pub fn new_ambiguous(&mut self, function_id: FunctionID) -> AmbiguousFunctionID {
         let name = self.function_id_vec[function_id].name;
@@ -144,6 +149,7 @@ impl IdentifierLookup {
             param_types.push(param.get_variable_type(self).unwrap());
         }
         self.function_id_vec.push(FunctionInfo {
+            id,
             name,
             params,
             param_types,
@@ -152,6 +158,8 @@ impl IdentifierLookup {
             declared_pos,
             stack_size: None,
             start_adress: None,
+            dependencies: vec![],
+            is_compiled: false,
         });
         let ambig_id = self.new_ambiguous(id);
 
@@ -177,16 +185,14 @@ impl IdentifierLookup {
     pub fn acquire_identifier_id(
         &mut self,
         lexeme: &str,
-        pos: Pos,
-    ) -> Result<IdentifierID, ZeptwoError> {
+    ) -> Option<IdentifierID> {
         let current_scope = self.scope_identifier_map.last_mut().unwrap();
         match current_scope.get(lexeme) {
-            Some(old_id) => Ok(*old_id),
+            Some(old_id) => Some(*old_id),
             None => {
                 let len = self.scope_identifier_map.len() - 1;
                 Self::acquire_identifier_id_from_vec(
                     lexeme,
-                    pos,
                     &mut self.scope_identifier_map[0..len],
                 )
             }
@@ -195,28 +201,22 @@ impl IdentifierLookup {
 
     fn acquire_identifier_id_from_vec(
         lexeme: &str,
-        pos: Pos,
         string_map: &mut [HashMap<&'static str, IdentifierID>],
-    ) -> Result<IdentifierID, ZeptwoError> {
-        if let Some(current_scope) = string_map.last_mut() {
-            match current_scope.get(lexeme) {
-                Some(old_id) => Ok(*old_id),
-                None => {
-                    let len = string_map.len();
-
-                    if len > 1 {
-                        Self::acquire_identifier_id_from_vec(lexeme, pos, &mut string_map[0..len])
-                    } else {
-                        todo!()
+    ) -> Option<IdentifierID> {
+        let current_scope = string_map.last_mut();
+        match current_scope {
+            None => None,
+            Some(current_scope) => {
+                match current_scope.get(lexeme) {
+                    Some(old_id) => Some(*old_id),
+                    None => {
+                        let len = string_map.len() - 1;
+                        Self::acquire_identifier_id_from_vec(lexeme, &mut string_map[0..len])
                     }
                 }
             }
-        } else {
-            Err(ZeptwoError::parser_error_at_line(
-                pos,
-                format!("Variable '{}' is not defined.", lexeme),
-            ))
         }
+        
     }
 }
 
@@ -226,11 +226,10 @@ pub struct VariableInfo {
     pub data_type: Option<ValType>,
     pub stack_index: Option<usize>,
     pub declared_pos: Pos,
+    pub is_global: bool,
 }
 
 newtype_index!(VariableID, VariableInfo);
-
-// static VARIABLE_INFO_VEC: Lazy<Mutex<Vec<VariableInfo>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 impl VariableID {
     pub fn get_variable_info(self, lookup: &IdentifierLookup) -> VariableInfo {
@@ -296,7 +295,8 @@ impl FunctionID {
 
 #[derive(Clone)]
 pub struct FunctionInfo {
-    name: &'static str,
+    pub id: FunctionID,
+    pub name: &'static str, // todo: hide name and create display method where function types can be seen
     params: Vec<VariableID>,
     param_types: Vec<ValType>,
     pub body: Expr,
@@ -304,6 +304,8 @@ pub struct FunctionInfo {
     pub stack_size: Option<usize>,
     pub declared_pos: Pos,
     pub start_adress: Option<usize>,
+    pub dependencies: Vec<DependencyID>,
+    pub is_compiled: bool,
 }
 
 impl FunctionInfo {
@@ -313,13 +315,14 @@ impl FunctionInfo {
 }
 
 impl CheckTypes for FunctionInfo {
-    fn check_types(&mut self, lookup: &mut IdentifierLookup) -> Result<(), ZeptwoError> {
-        if self.return_type != self.body.determine_type_and_opcode(lookup)? {
+    fn check_types(&mut self, lookup: &mut IdentifierLookup, dependencies: &mut Vec<DependencyID>) -> Result<(), ZeptwoError> {
+        if self.return_type != self.body.determine_type_and_opcode(lookup, &mut self.dependencies)? {
             Err(ZeptwoError::parser_error(format!(
                 "Expected function '{}' to return type '{}'",
                 self.name, self.return_type
             )))?;
         }
+        dependencies.extend_from_slice(self.dependencies.as_slice());
         Ok(())
     }
 }
@@ -348,45 +351,10 @@ impl SizeAndIndex for FunctionInfo {
 pub enum IdentifierID {
     Var(VariableID),
     Func(AmbiguousFunctionID),
-    Unresolved(),
 }
 
-impl IdentifierID {
-    // pub fn acquire_identifier_id(lexeme: &str, pos: Pos) -> Result<IdentifierID, ZeptwoError> {
-    //     let mut string_map = SCOPE_IDENTIFIER_MAP.lock().unwrap();
-    //     let current_scope = string_map.last_mut().unwrap();
-    //     match current_scope.get(lexeme) {
-    //         Some(old_id) => Ok(*old_id),
-    //         None => {
-    //             let len = string_map.len() - 1;
-    //             Self::acquire_identifier_id_from_vec(lexeme, pos, &mut string_map[0..len])
-    //         }
-    //     }
-    // }
-
-    // fn acquire_identifier_id_from_vec(
-    //     lexeme: &str,
-    //     pos: Pos,
-    //     string_map: &mut [HashMap<&'static str, IdentifierID>],
-    // ) -> Result<IdentifierID, ZeptwoError> {
-    //     if let Some(current_scope) = string_map.last_mut() {
-    //         match current_scope.get(lexeme) {
-    //             Some(old_id) => Ok(*old_id),
-    //             None => {
-    //                 let len = string_map.len();
-
-    //                 if len > 1 {
-    //                     Self::acquire_identifier_id_from_vec(lexeme, pos, &mut string_map[0..len])
-    //                 } else {
-    //                     todo!()
-    //                 }
-    //             }
-    //         }
-    //     } else {
-    //         Err(ZeptwoError::parser_error_at_line(
-    //             pos,
-    //             format!("Variable '{}' is not defined.", lexeme),
-    //         ))
-    //     }
-    // }
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+pub enum DependencyID {
+    // Var(VariableID), // TODO: MIght remove
+    Func(FunctionID),
 }

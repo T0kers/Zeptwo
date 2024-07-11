@@ -1,4 +1,6 @@
-use identifiers::{FunctionInfo, IdentifierLookup};
+use std::collections::HashSet;
+
+use identifiers::{DependencyID, FunctionID, FunctionInfo, IdentifierLookup};
 
 use crate::errors::ZeptwoError;
 use crate::parser::ast::{
@@ -31,10 +33,21 @@ impl Compiler {
     }
     pub fn compile(&mut self) -> Result<Bytecode, ZeptwoError> {
         let mut bytecode = BytecodeConstructer::new();
-        bytecode.emit_main_call();
+        for global in &mut self.lookup.global_variable_definitions.clone() {
+            global.compile(&mut bytecode, &mut self.lookup)?;
+        }
+        let main_call = bytecode.emit_main_call();
         let jump = bytecode.emit_jump(FullOpCode::Jump { offset: 0 });
+        let mut found_main = false;
         for i in 0..self.lookup.function_id_vec.len() {
-            self.lookup.compile_function(&mut bytecode, i)?;
+            if self.lookup.function_id_vec[i].is_main() {
+                self.lookup.compile_main_with_dependencies(&mut bytecode, &mut HashSet::new(), self.lookup.function_id_vec[i].id, main_call)?;
+                found_main = true;
+                break;
+            }
+        }
+        if !found_main {
+            Err(ZeptwoError::compile_error("Could not find main function."))?
         }
         bytecode.patch_jump(jump)?;
         bytecode.add_opcode_same_pos(FullOpCode::Eof);
@@ -43,20 +56,75 @@ impl Compiler {
 }
 
 impl IdentifierLookup {
-    fn compile_function(
+    fn compile_main_with_dependencies(
         &mut self,
         bytecode: &mut BytecodeConstructer,
-        i: usize,
+        dependents: &mut HashSet<DependencyID>,
+        function: FunctionID,
+        main_call_index: usize,
     ) -> Result<(), ZeptwoError> {
-        self.function_id_vec[i].start_adress = Some(bytecode.next_instruction_index());
-        if self.function_id_vec[i].is_main() {
-            bytecode.patch_main_call(self.function_id_vec[i].start_adress.unwrap())?;
+        dependents.insert(DependencyID::Func(function));
+        for dependency in &self.function_id_vec[function].dependencies.clone() {
+            match dependency {
+                DependencyID::Func(id) => {
+                    if dependents.get(&DependencyID::Func(*id)).is_none() {
+                        self.compile_function_with_dependencies(bytecode, dependents, *id)?;
+                    }
+                    else if self.function_id_vec[*id].is_main() { // FIXME: this error does not seem to work
+                        Err(ZeptwoError::compiler_error_at_pos(self.function_id_vec[function].declared_pos, format!("Function '{}' calls main.", self.function_id_vec[function].name)))?
+                    }
+                    else if function != *id {
+                        Err(ZeptwoError::compiler_error_at_pos(self.function_id_vec[function].declared_pos, format!("Function '{}' and '{}' recursively call each other.", self.function_id_vec[function].name, self.function_id_vec[*id].name)))?
+                    }
+                }
+            }
         }
-        let mut body = self.function_id_vec[i].body.clone();
+        let function_start = bytecode.next_instruction_index();
+        self.function_id_vec[function].start_adress = Some(function_start);
+        if self.function_id_vec[function].is_main() {
+            bytecode.patch_main_call(main_call_index, function_start)?;
+        }
+        else {panic!()}
+        let mut body = self.function_id_vec[function].body.clone();
         body.compile(bytecode, self)?;
-        self.function_id_vec[i].body = body;
+        self.function_id_vec[function].body = body;
+        self.function_id_vec[function].is_compiled = true;
 
         bytecode.add_opcode_same_pos(FullOpCode::Return);
+        assert!(dependents.remove(&DependencyID::Func(function)));
+        Ok(())
+    }
+    fn compile_function_with_dependencies(
+        &mut self,
+        bytecode: &mut BytecodeConstructer,
+        dependents: &mut HashSet<DependencyID>,
+        function: FunctionID,
+    ) -> Result<(), ZeptwoError> {
+        dependents.insert(DependencyID::Func(function));
+        for dependency in &self.function_id_vec[function].dependencies.clone() {
+            match dependency {
+                DependencyID::Func(id) => {
+                    if dependents.get(&DependencyID::Func(*id)).is_none() {
+                        self.compile_function_with_dependencies(bytecode, dependents, *id)?;
+                    }
+                    else if function != *id {
+                        Err(ZeptwoError::compiler_error_at_pos(self.function_id_vec[function].declared_pos, format!("Function '{}' and '{}' recursively call each other.", self.function_id_vec[function].name, self.function_id_vec[*id].name)))?
+                    }
+                    else if self.function_id_vec[*id].is_main() {
+                        Err(ZeptwoError::compiler_error_at_pos(self.function_id_vec[function].declared_pos, format!("Function '{}' manually calls main.", self.function_id_vec[function].name)))?
+                    }
+                }
+            }
+        }
+        self.function_id_vec[function].start_adress = Some(bytecode.next_instruction_index());
+        
+        let mut body = self.function_id_vec[function].body.clone();
+        body.compile(bytecode, self)?;
+        self.function_id_vec[function].body = body;
+        self.function_id_vec[function].is_compiled = true;
+
+        bytecode.add_opcode_same_pos(FullOpCode::Return);
+        assert!(dependents.remove(&DependencyID::Func(function)));
         Ok(())
     }
 }
@@ -168,7 +236,7 @@ impl Compile for Expr {
                     bytecode.patch_jump(then_jump)?;
                 }
             }
-            Expr::FnCall { callee, args } => {
+            Expr::FnCall { callee, args, .. } => {
                 let mut args_size = 0;
                 for arg in args {
                     arg.compile(bytecode, lookup)?;
@@ -177,7 +245,7 @@ impl Compile for Expr {
                 let address = {
                     let address = callee.get_address(lookup).unwrap();
                     if address > u32::MAX as usize {
-                        Err(ZeptwoError::compiler_error_at_line(
+                        Err(ZeptwoError::compiler_error_at_pos(
                             self.left_pos(lookup),
                             "Function addresss to too big.",
                         ))?
@@ -194,8 +262,8 @@ impl Compile for Expr {
             Expr::Assignment { var_id, node } => {
                 node.compile(bytecode, lookup)?;
                 let id = var_id.get_variable_info(lookup);
-                let (Some(data_type), Some(stack_index)) = (id.data_type, id.stack_index) else {
-                    Err(ZeptwoError::compiler_error_at_line(
+                let (Some(data_type), Some(stack_index), is_global) = (id.data_type, id.stack_index, id.is_global) else {
+                    Err(ZeptwoError::compiler_error_at_pos(
                         lookup.var_pos(*var_id),
                         format!("Could not access identifier '{}'.", id.name),
                     ))?
@@ -203,6 +271,7 @@ impl Compile for Expr {
                 bytecode.set_variable(
                     stack_index,
                     data_type.get_result_size(lookup),
+                    is_global,
                     lookup.var_pos(*var_id),
                 )?;
             }
@@ -212,7 +281,7 @@ impl Compile for Expr {
                 if let OpCodeOp::OpCode(o) = op {
                     bytecode.add_opcode(*o, lhs.right_pos(lookup));
                 } else {
-                    Err(ZeptwoError::compiler_error_at_line(
+                    Err(ZeptwoError::compiler_error_at_pos(
                         lhs.right_pos(lookup),
                         "Operator was not converted into opcode.",
                     ))?
@@ -223,7 +292,7 @@ impl Compile for Expr {
                 if let OpCodeOp::OpCode(o) = op {
                     bytecode.add_opcode(*o, node.left_pos(lookup));
                 } else {
-                    Err(ZeptwoError::compiler_error_at_line(
+                    Err(ZeptwoError::compiler_error_at_pos(
                         node.left_pos(lookup),
                         "Operator was not converted into opcode.",
                     ))?
@@ -234,14 +303,15 @@ impl Compile for Expr {
             }
             Expr::Variable { id, pos: line } => {
                 let id = id.get_variable_info(lookup);
-                let (Some(data_type), Some(stack_index)) = (id.data_type, id.stack_index) else {
-                    Err(ZeptwoError::compiler_error_at_line(
+                let (Some(data_type), Some(stack_index), is_global) = (id.data_type, id.stack_index, id.is_global) else {
+                    Err(ZeptwoError::compiler_error_at_pos(
                         *line,
                         format!("Could not access identifier '{}'", id.name),
                     ))?
                 };
-                bytecode.get_variable(stack_index, data_type.get_result_size(lookup), *line)?;
+                bytecode.get_variable(stack_index, data_type.get_result_size(lookup), is_global, *line)?;
             }
+            Expr::UnresolvedIdentifier { .. } => unreachable!(),
             Expr::Nothing => {
                 println!("Compiling nothing expr, doing nothing.")
             }

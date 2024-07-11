@@ -25,7 +25,9 @@ struct Dog {
 extend Dog with Hello {
 
 }
+maybe use derive instead of extend?
 
 if a == 2 (
     
 )
+

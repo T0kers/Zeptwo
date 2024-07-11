@@ -28,11 +28,11 @@ impl ZeptwoError {
         ZeptwoError::Compiler(msg.into())
     }
 
-    pub fn compiler_error_at_line(pos: Pos, msg: impl Into<String>) -> ZeptwoError {
+    pub fn compiler_error_at_pos(pos: Pos, msg: impl Into<String>) -> ZeptwoError {
         ZeptwoError::Compiler(format!("[Line {}] {}", pos, msg.into()))
     }
 
-    pub fn parser_error_at_line(pos: Pos, msg: impl Into<String>) -> ZeptwoError {
+    pub fn parser_error_at_pos(pos: Pos, msg: impl Into<String>) -> ZeptwoError {
         ZeptwoError::Parser(format!("[{}] {}", pos, msg.into()))
     }
 

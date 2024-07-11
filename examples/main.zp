@@ -1,0 +1,11 @@
+
+let a = 2;
+
+fn main(): Int {
+    foo();
+    a
+}
+
+fn foo() {
+    a = 5;
+}

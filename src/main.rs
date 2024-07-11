@@ -58,8 +58,7 @@ fn run_file(path: &str) -> Result<(), ZeptwoError> {
     let source: &'static str = match read_file_as_static(path) {
         Some(o) => o,
         None => {
-            eprintln!("Unable to read file");
-            return Ok(()); // TODO: change this
+            Err(ZeptwoError::Scanner("Could not read file.".to_string()))?
         }
     };
     let mut parser = Parser::new(source);
@@ -72,4 +71,3 @@ fn run_file(path: &str) -> Result<(), ZeptwoError> {
     Ok(())
 }
 
-// functions that return classes, should only return members that accually gets used.

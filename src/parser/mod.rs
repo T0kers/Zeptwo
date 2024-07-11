@@ -1,14 +1,13 @@
 pub mod ast;
 use ast::{
     expr::{Expr, Val, ValType},
-    stmt::{CheckTypes, Stmt},
+    stmt::Stmt,
     *,
 };
 use expr::ValTypeTrait;
-use identifiers::{FunctionID, IdentifierID, IdentifierLookup};
+use identifiers::{IdentifierID, IdentifierLookup};
 
 use crate::{errors::ZeptwoError, position::Position};
-use ast::identifiers::VariableID;
 
 use super::scanner::{Scanner, Token, TokenKind};
 use crate::position::Pos;
@@ -88,6 +87,7 @@ impl Parser {
                 ambiguous_function_vec: vec![],
                 ambiguous_function_map: HashMap::new(),
                 function_id_vec: vec![],
+                global_variable_definitions: vec![],
                 scope_identifier_map: vec![],
             },
             had_error: false,
@@ -111,10 +111,8 @@ impl Parser {
             ))?;
         }
         self.lookup.check_types()?;
-        // self.ast.check_types()?;
         //self.ast.optimize()?;
         self.lookup.determine_size_and_indexes()?;
-        // self.ast.determine_size_and_indexes(&mut stack_size)?;
 
         Ok(())
     }
@@ -158,6 +156,28 @@ impl Parser {
     }
 
     fn let_declaration(&mut self) -> Result<(), ZeptwoError> {
+        self.consume(TokenKind::Identifier, "Expected variable name.")?;
+        let variable_name = self.previous.lexeme;
+        let var_pos = self.previous.pos;
+
+        let mut val_type = None;
+        if self.compare(TokenKind::Colon)? {
+            self.consume(TokenKind::Identifier, "Expected variable type after ':'.")?;
+            val_type = Some(ValType::from_str(self.previous.lexeme)?);
+        }
+
+        self.consume(TokenKind::Equal, "Expected '=' after variable name.")?;
+
+        let expr = self.expression()?;
+        self.consume(TokenKind::Semicolon, "Expected ';' after let statement.")?;
+
+        let var_id = self.lookup.new_variable(variable_name, val_type, var_pos, true);
+        println!(
+            "global name: {}, index: {:?}",
+            variable_name,
+            var_id.get_variable_info(&self.lookup).stack_index
+        );
+        self.lookup.global_variable_definitions.push(Stmt::Let { var_id, expr });
         Ok(())
     }
 
@@ -179,7 +199,7 @@ impl Parser {
             parameter_size += var_type.get_result_size(&self.lookup) as usize;
             params.push(
                 self.lookup
-                    .new_variable(param_name, Some(var_type), self.previous.pos),
+                    .new_variable(param_name, Some(var_type), self.previous.pos, true),
             );
 
             if !self.compare(TokenKind::Comma)? {
@@ -188,9 +208,12 @@ impl Parser {
         }
         self.consume(TokenKind::RParen, "Expected ')' after function name.")?;
 
-        self.consume(TokenKind::Colon, "Expected ':' after parameters.")?;
-
-        let return_type = self.type_expression()?;
+        let return_type = if self.compare(TokenKind::Colon)? {
+            self.type_expression()?
+        }
+        else {
+            ValType::Nul
+        };
 
         self.consume(TokenKind::LBrace, "Expected '{' before function body.")?;
 
@@ -247,7 +270,7 @@ impl Parser {
             match self.item()? {
                 Item::Stmt(stmt) => body.push(stmt),
                 Item::Expr(expr) => {
-                    Err(ZeptwoError::parser_error_at_line(
+                    Err(ZeptwoError::parser_error_at_pos(
                         expr.right_pos(&self.lookup),
                         "Expected statement.",
                     ))?;
@@ -278,13 +301,7 @@ impl Parser {
         let expr = self.expression()?;
         self.consume(TokenKind::Semicolon, "Expected ';' after let statement.")?;
 
-        let var_id = self.lookup.new_variable(variable_name, val_type, var_pos);
-        println!(
-            "name: {}, index: {:?}",
-            variable_name,
-            var_id.get_variable_info(&self.lookup).stack_index
-        );
-
+        let var_id = self.lookup.new_variable(variable_name, val_type, var_pos, false);
         Ok(Stmt::Let { var_id, expr })
     }
 
@@ -420,11 +437,9 @@ impl Parser {
 
     fn identifier(&mut self, can_assign: bool) -> Result<Expr, ZeptwoError> {
         let lexeme = self.previous.lexeme;
-        let id = self
-            .lookup
-            .acquire_identifier_id(lexeme, self.previous.pos)?;
+        let id = self.lookup.acquire_identifier_id(lexeme);
         match id {
-            IdentifierID::Var(id) => {
+            Some(IdentifierID::Var(id)) => {
                 if can_assign && self.compare(TokenKind::Equal)? {
                     let expr = self.expression()?;
                     Ok(Expr::Assignment {
@@ -438,7 +453,7 @@ impl Parser {
                     })
                 }
             }
-            IdentifierID::Func(id) => {
+            Some(IdentifierID::Func(id)) => {
                 if self.compare(TokenKind::LParen)? {
                     let mut args = vec![];
                     while !self.compare(TokenKind::RParen)? {
@@ -452,7 +467,7 @@ impl Parser {
                             break;
                         }
                     }
-                    Ok(Expr::AmbiguousFnCall { callee: id, args })
+                    Ok(Expr::AmbiguousFnCall { callee: id, args, pos: self.previous.pos })
                 } else {
                     Ok(Expr::Variable {
                         id: todo!(), /*id.as_expr()*/
@@ -460,7 +475,27 @@ impl Parser {
                     })
                 }
             }
-            IdentifierID::Unresolved() => todo!(),
+            None => {
+                if self.compare(TokenKind::LParen)? { // todo: make into function so no code repetition
+                    let mut args = vec![];
+                    while !self.compare(TokenKind::RParen)? {
+                        args.push(self.expression()?);
+
+                        if !self.compare(TokenKind::Comma)? {
+                            self.consume(
+                                TokenKind::RParen,
+                                "Expected ')' after function arguments.",
+                            )?;
+                            break;
+                        }
+                    }
+                    Ok(Expr::UnresolvedIdentifier { pos: self.previous.pos, lexeme, args: Some(args) })
+                } else {
+                    Ok(Expr::UnresolvedIdentifier {
+                        pos: self.previous.pos, lexeme, args: None,
+                    })
+                }
+            }
         }
     }
 
@@ -505,8 +540,8 @@ impl Parser {
             TK::EqualEqual => &EQ_RULE,
             TK::Plus => &PLUS_RULE,
             TK::Minus => &MINUS_RULE,
-            TK::Exclamation | TK::Tilde => &UNARY_RULE,
-            TK::Star | TK::Slash | TK::Rem => &TERM_RULE,
+            TK::Exclamation => &UNARY_RULE,
+            TK::Star | TK::Slash | TK::Percent => &TERM_RULE,
             TK::Int | TK::Float | TK::String | TK::True | TK::False | TK::Nul => &VALUE_RULE,
             TK::Identifier => &IDENTIFIER_RULE,
             _ => &DEFAULT_RULE,

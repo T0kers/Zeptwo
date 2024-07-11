@@ -1,5 +1,5 @@
 
-use super::identifiers::{FunctionID, IdentifierLookup, VariableID};
+use super::identifiers::{DependencyID, FunctionID, IdentifierID, IdentifierLookup, VariableID};
 use super::{identifiers::AmbiguousFunctionID, stmt::*};
 use crate::vm::bytecode::FullOpCode;
 use crate::{
@@ -18,6 +18,7 @@ pub trait ValTypeTrait {
     fn determine_type_and_opcode(
         &mut self,
         lookup: &mut IdentifierLookup,
+        dependencies: &mut Vec<DependencyID>
     ) -> Result<ValType, ZeptwoError>;
     fn get_result_size(&self, lookup: &IdentifierLookup) -> u16;
 }
@@ -25,14 +26,16 @@ pub trait ValTypeTrait {
 impl std::str::FromStr for ValType {
     type Err = ZeptwoError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "str" => Ok(ValType::Str),
-            "int" => Ok(ValType::Int),
-            "flt" => Ok(ValType::Flt),
-            "bool" => Ok(ValType::Bool),
-            "nul" => Ok(ValType::Nul),
-            _ => panic!(),
-        }
+        Ok(
+            match s {
+                "String" => ValType::Str,
+                "Int" => ValType::Int,
+                "Float" => ValType::Flt,
+                "Bool" => ValType::Bool,
+                "Nul" => ValType::Nul,
+                _ => panic!(),
+            }
+        )
     }
 }
 
@@ -44,11 +47,11 @@ impl fmt::Display for ValType {
                 return_type,
                 ..
             } => write!(f, "fn ({}) -> {}", "fix", "this"), // TODO fix this
-            Self::Str => write!(f, "{}", "<str>"),
-            Self::Int => write!(f, "{}", "<int>"),
-            Self::Flt => write!(f, "{}", "<flt>"),
-            Self::Bool => write!(f, "{}", "<bool>"),
-            Self::Nul => write!(f, "{}", "<nul>"),
+            Self::Str => write!(f, "String"),
+            Self::Int => write!(f, "Int"),
+            Self::Flt => write!(f, "Float"),
+            Self::Bool => write!(f, "Bool"),
+            Self::Nul => write!(f, "Nul"),
         }
     }
 }
@@ -60,6 +63,7 @@ impl ValTypeTrait for ValType {
     fn determine_type_and_opcode(
         &mut self,
         lookup: &mut IdentifierLookup,
+        _: &mut Vec<DependencyID>,
     ) -> Result<ValType, ZeptwoError> {
         Ok(self.get_type(lookup).unwrap())
     }
@@ -146,6 +150,7 @@ impl ValTypeTrait for Func {
     fn determine_type_and_opcode(
         &mut self,
         lookup: &mut IdentifierLookup,
+        dependencies: &mut Vec<DependencyID>,
     ) -> Result<ValType, ZeptwoError> {
         Ok(self.get_type(lookup).unwrap())
     }
@@ -191,6 +196,7 @@ impl ValTypeTrait for Val {
     fn determine_type_and_opcode(
         &mut self,
         lookup: &mut IdentifierLookup,
+        dependencies: &mut Vec<DependencyID>,
     ) -> Result<ValType, ZeptwoError> {
         Ok(self.get_type(lookup).unwrap())
     }
@@ -219,7 +225,6 @@ impl fmt::Display for Val {
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOp {
     USub,
-    BitNot,
     Not,
 }
 
@@ -230,7 +235,6 @@ impl fmt::Display for UnaryOp {
             "{}",
             match self {
                 Self::USub => "-",
-                Self::BitNot => "~",
                 Self::Not => "!",
             }
         )
@@ -274,7 +278,6 @@ impl OpCodeOp<UnaryOp> {
     pub fn new_unary(token: Token) -> Self {
         OpCodeOp::Op(match token.kind {
             TokenKind::Minus => UnaryOp::USub,
-            TokenKind::Tilde => UnaryOp::BitNot,
             TokenKind::Exclamation => UnaryOp::Not,
             _ => panic!(),
         })
@@ -288,7 +291,7 @@ impl OpCodeOp<BinaryOp> {
             TokenKind::Minus => BinaryOp::Sub,
             TokenKind::Star => BinaryOp::Mul,
             TokenKind::Slash => BinaryOp::Div,
-            TokenKind::Rem => BinaryOp::Mod,
+            TokenKind::Percent => BinaryOp::Mod,
             TokenKind::EqualEqual => BinaryOp::Eq,
             _ => panic!(),
         })
@@ -321,10 +324,12 @@ pub enum Expr {
     FnCall {
         callee: FunctionID,
         args: Vec<Expr>,
+        pos: Pos,
     },
     AmbiguousFnCall {
         callee: AmbiguousFunctionID,
         args: Vec<Expr>,
+        pos: Pos,
     },
     Assignment {
         var_id: VariableID,
@@ -348,6 +353,11 @@ pub enum Expr {
     Variable {
         id: VariableID,
         pos: Pos,
+    },
+    UnresolvedIdentifier {
+        pos: Pos,
+        lexeme: &'static str,
+        args: Option<Vec<Expr>>,
     },
     Nothing,
 }
@@ -399,15 +409,25 @@ impl Expr {
 impl Position for Expr {
     fn left_pos(&self, lookup: &IdentifierLookup) -> Pos {
         match self {
-            Expr::Block { body, .. } => body[0].left_pos(lookup),
+            Expr::Block { body, value, .. } => match body.first() {
+                Some(expr) => expr.left_pos(lookup),
+                None => value.left_pos(lookup),
+            },
             Expr::If { condition, .. } => condition.left_pos(lookup),
-            Expr::FnCall { args, .. } => args[0].left_pos(lookup),
-            Expr::AmbiguousFnCall { args, .. } => args[0].left_pos(lookup),
+            Expr::FnCall { args, pos, .. } => match args.first() {
+                Some(arg) => {arg.left_pos(lookup)},
+                None => *pos,
+            },
+            Expr::AmbiguousFnCall { args, pos, .. } => match args.first() {
+                Some(arg) => {arg.left_pos(lookup)},
+                None => *pos,
+            },
             Expr::Assignment { node, .. } => node.left_pos(lookup),
             Expr::Unary { node, .. } => node.left_pos(lookup),
             Expr::Binary { lhs, .. } => lhs.left_pos(lookup),
             Expr::Value { pos, .. } => *pos,
             Expr::Variable { pos, .. } => *pos,
+            Expr::UnresolvedIdentifier { pos, .. } => *pos,
             Expr::Nothing => panic!(),
         }
     }
@@ -432,6 +452,7 @@ impl Position for Expr {
             Expr::Binary { rhs, .. } => rhs.right_pos(lookup),
             Expr::Value { pos, .. } => *pos,
             Expr::Variable { pos, .. } => *pos,
+            Expr::UnresolvedIdentifier { pos, .. } => *pos,
             Expr::Nothing => panic!(),
         }
     }
@@ -449,12 +470,14 @@ impl ValTypeTrait for Expr {
             Expr::Binary { data_type, .. } => data_type.as_ref().cloned(),
             Expr::Value { value, .. } => value.get_type(lookup),
             Expr::Variable { id, .. } => id.get_variable_type(lookup),
+            Expr::UnresolvedIdentifier { .. } => None,
             Expr::Nothing => panic!(),
         }
     }
     fn determine_type_and_opcode(
         &mut self,
         lookup: &mut IdentifierLookup,
+        dependencies: &mut Vec<DependencyID>,
     ) -> Result<ValType, ZeptwoError> {
         let check_type = self.get_type(lookup);
         match check_type {
@@ -467,9 +490,9 @@ impl ValTypeTrait for Expr {
                         ..
                     } => {
                         for stmt in body {
-                            stmt.check_types(lookup)?;
+                            stmt.check_types(lookup, dependencies)?;
                         }
-                        *data_type = Some(value.determine_type_and_opcode(lookup)?);
+                        *data_type = Some(value.determine_type_and_opcode(lookup, dependencies)?);
                     }
                     Expr::If {
                         condition,
@@ -477,10 +500,10 @@ impl ValTypeTrait for Expr {
                         else_branch,
                         data_type,
                     } => {
-                        let condition_type = condition.determine_type_and_opcode(lookup)?;
+                        let condition_type = condition.determine_type_and_opcode(lookup, dependencies)?;
                         if let ValType::Bool = condition_type {
                         } else {
-                            Err(ZeptwoError::parser_error_at_line(
+                            Err(ZeptwoError::parser_error_at_pos(
                                 condition.right_pos(lookup),
                                 format!(
                                     "Expected type '{}' from condition. Found '{}'",
@@ -489,15 +512,15 @@ impl ValTypeTrait for Expr {
                                 ),
                             ))?;
                         }
-                        let then_type = then_branch.determine_type_and_opcode(lookup)?;
+                        let then_type = then_branch.determine_type_and_opcode(lookup, dependencies)?;
                         if let Some(else_branch) = else_branch {
-                            let else_type = else_branch.determine_type_and_opcode(lookup)?;
+                            let else_type = else_branch.determine_type_and_opcode(lookup, dependencies)?;
                             if then_type != else_type {
-                                Err(ZeptwoError::parser_error_at_line(then_branch.right_pos(lookup), format!("Then and else branch have incompatible types. Expected '{}' in else block, found '{}'", then_type, else_type)))?;
+                                Err(ZeptwoError::parser_error_at_pos(then_branch.right_pos(lookup), format!("Then and else branch have incompatible types. Expected '{}' in else block, found '{}'", then_type, else_type)))?;
                             }
                         } else if let ValType::Nul = then_type {
                         } else {
-                            Err(ZeptwoError::parser_error_at_line(
+                            Err(ZeptwoError::parser_error_at_pos(
                                 then_branch.right_pos(lookup),
                                 format!(
                                     "Expected type '{}' from then branch. Found '{}'",
@@ -510,21 +533,23 @@ impl ValTypeTrait for Expr {
                         *data_type = Some(then_type)
                     }
                     Expr::FnCall { .. } => unreachable!(),
-                    Expr::AmbiguousFnCall { callee, args } => {
+                    Expr::AmbiguousFnCall { callee, args, pos: left_pos } => {
                         let mut types = vec![];
                         for arg in &mut args.clone() {
-                            types.push(arg.determine_type_and_opcode(lookup)?.clone());
+                            types.push(arg.determine_type_and_opcode(lookup, dependencies)?.clone());
                         }
                         match lookup.determine_function(*callee, &types) {
                             Some(func) => {
+                                dependencies.push(DependencyID::Func(func));
                                 *self = Expr::FnCall {
                                     callee: func,
                                     args: args.clone(),
+                                    pos: *left_pos,
                                 };
                             }
                             None => {
                                 let callee_name = lookup.get_ambiguous_name(*callee);
-                                Err(ZeptwoError::parser_error_at_line(self.left_pos(lookup), format!("Wrong arguments parsed into function '{}', arguments recieved were: {}", callee_name, {
+                                Err(ZeptwoError::parser_error_at_pos(self.left_pos(lookup), format!("Wrong arguments parsed into function '{}', arguments recieved were: {}", callee_name, {
                                     let mut string = String::from("("); // TODO: turn into function thing
                                     let mut first = true;
                                     for t in types {
@@ -541,9 +566,9 @@ impl ValTypeTrait for Expr {
                     }
                     Expr::Assignment { var_id, node } => {
                         if let Some(var_type) = var_id.get_variable_type(lookup) {
-                            let node_type = node.determine_type_and_opcode(lookup)?;
+                            let node_type = node.determine_type_and_opcode(lookup, dependencies)?;
                             if var_type != node_type {
-                                Err(ZeptwoError::parser_error_at_line(
+                                Err(ZeptwoError::parser_error_at_pos(
                                     self.left_pos(lookup),
                                     format!(
                                         "Can't assign '{}' to variable with type '{}'.",
@@ -561,7 +586,7 @@ impl ValTypeTrait for Expr {
                         data_type,
                     } => {
                         let mut error = false;
-                        let node_type = node.determine_type_and_opcode(lookup)?;
+                        let node_type = node.determine_type_and_opcode(lookup, dependencies)?;
                         if let OpCodeOp::Op(operation) = op {
                             match operation {
                                 UnaryOp::USub => match node_type {
@@ -577,17 +602,9 @@ impl ValTypeTrait for Expr {
                                         error = true;
                                     }
                                 },
-                                UnaryOp::BitNot => {
-                                    if let ValType::Int = node_type {
-                                        *op = OpCodeOp::OpCode(FullOpCode::BitnotInt);
-                                        *data_type = Some(ValType::Int);
-                                    } else {
-                                        error = true;
-                                    }
-                                }
                                 UnaryOp::Not => match node_type {
                                     ValType::Int => {
-                                        *op = OpCodeOp::OpCode(FullOpCode::NotInt);
+                                        *op = OpCodeOp::OpCode(FullOpCode::BitnotInt);
                                         *data_type = Some(node_type.clone());
                                     }
                                     ValType::Bool => {
@@ -601,7 +618,7 @@ impl ValTypeTrait for Expr {
                             }
                         }
                         if error {
-                            return Err(ZeptwoError::parser_error_at_line(
+                            return Err(ZeptwoError::parser_error_at_pos(
                                 node.right_pos(lookup),
                                 format!(
                                     "Unary operator '{}', not supported for type '{}'.",
@@ -618,8 +635,8 @@ impl ValTypeTrait for Expr {
                         data_type,
                     } => {
                         let mut error = false;
-                        let lhs_type = lhs.determine_type_and_opcode(lookup)?;
-                        let rhs_type = rhs.determine_type_and_opcode(lookup)?;
+                        let lhs_type = lhs.determine_type_and_opcode(lookup, dependencies)?;
+                        let rhs_type = rhs.determine_type_and_opcode(lookup, dependencies)?;
                         if let OpCodeOp::Op(operation) = op {
                             match operation {
                                 BinaryOp::Add => match (lhs_type.clone(), rhs_type.clone()) {
@@ -650,7 +667,7 @@ impl ValTypeTrait for Expr {
                                 },
                                 BinaryOp::Mul => match (lhs_type.clone(), rhs_type.clone()) {
                                     (ValType::Int, ValType::Int) => {
-                                        *op = OpCodeOp::OpCode(FullOpCode::ModInt);
+                                        *op = OpCodeOp::OpCode(FullOpCode::RemInt);
                                         *data_type = Some(lhs_type.clone());
                                     }
                                     (ValType::Flt, ValType::Flt) => {
@@ -678,7 +695,7 @@ impl ValTypeTrait for Expr {
                                     if let (ValType::Int, ValType::Int) =
                                         (lhs_type.clone(), rhs_type.clone())
                                     {
-                                        *op = OpCodeOp::OpCode(FullOpCode::ModInt);
+                                        *op = OpCodeOp::OpCode(FullOpCode::RemInt);
                                         *data_type = Some(ValType::Int);
                                     };
                                 }
@@ -697,17 +714,42 @@ impl ValTypeTrait for Expr {
                                 },
                             }
                             if error {
-                                return Err(ZeptwoError::parser_error_at_line(lhs.left_pos(lookup), format!("Binary operator '{}', not supported for operands of type '{}' and '{}'.", op, lhs_type.clone(), rhs_type.clone()).as_str()));
+                                return Err(ZeptwoError::parser_error_at_pos(lhs.left_pos(lookup), format!("Binary operator '{}', not supported for operands of type '{}' and '{}'.", op, lhs_type.clone(), rhs_type.clone())));
                             }
                         }
                     }
                     Expr::Value { .. } => {}
                     Expr::Variable { .. } => {}
+                    Expr::UnresolvedIdentifier { pos, lexeme, args } => {
+                        match lookup.acquire_identifier_id(lexeme) {
+                            Some(IdentifierID::Var(id)) => {
+                                match args {
+                                    Some(_) => {
+                                        Err(ZeptwoError::parser_error_at_pos(*pos, format!("Can't call variable '{}'.", lexeme)))?
+                                    }
+                                    None => {
+                                        *self = Expr::Variable { id, pos: *pos };
+                                        self.determine_type_and_opcode(lookup, dependencies)?;
+                                    },
+                                }
+                            },
+                            Some(IdentifierID::Func(id)) => {
+                                match args.clone() {
+                                    Some(args) => {
+                                        *self = Expr::AmbiguousFnCall { callee: id, args, pos: *pos };
+                                        self.determine_type_and_opcode(lookup, dependencies)?;
+                                    }
+                                    None => Err(ZeptwoError::parser_error_at_pos(*pos, format!("Missing arguments to function '{}'.", lexeme)))?, // todo: make into expression.
+                                }
+                            },
+                            None => Err(ZeptwoError::parser_error_at_pos(*pos, format!("Could not find definition to identifier '{}'.", lexeme)))?,
+                        }
+                    }
                     Expr::Nothing => panic!(),
                 }
                 match self.get_type(lookup) {
                     Some(v) => Ok(v),
-                    None => Err(ZeptwoError::parser_error_at_line(
+                    None => Err(ZeptwoError::parser_error_at_pos(
                         self.right_pos(lookup),
                         "Could not determine expression type.",
                     )),
@@ -783,14 +825,14 @@ impl SizeAndIndex for Expr {
                     0
                 },
             )),
-            Expr::FnCall { callee, args } => {
+            Expr::FnCall { callee, args, .. } => {
                 for arg in args {
                     arg.determine_size_and_indexes(stack_index, lookup);
                 }
                 // TODO: Calculate size correctly !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
                 Ok(0)
             }
-            Expr::AmbiguousFnCall { callee, args } => unreachable!(),
+            Expr::AmbiguousFnCall { callee, args, .. } => unreachable!(),
             Expr::Assignment { node, .. } => {
                 Ok(node.determine_size_and_indexes(stack_index, lookup)?)
             }
@@ -810,11 +852,13 @@ impl SizeAndIndex for Expr {
                 .data_type
                 .unwrap()
                 .get_result_size(lookup) as usize),
+            Expr::UnresolvedIdentifier { .. } => unreachable!(),
             Expr::Nothing => Ok(0),
         }
     }
 }
 
+// TODO: reuse this in error messages.
 // impl fmt::Display for Expr {
 //     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 //         match self {

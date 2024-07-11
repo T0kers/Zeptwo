@@ -3,52 +3,6 @@ use std::collections::VecDeque;
 use crate::{errors::{echo, ZeptwoError}, parser::ast::expr::Val, position::Pos};
 use strum_macros::{Display, EnumDiscriminants, FromRepr};
 
-// macro_rules! generate_opcode {
-//     ($n:expr;) => {};
-//     ($n:expr; $name:ident $(, $rest:ident)*) => {
-//         pub const $name: u8 = $n;
-//         generate_opcode!($n + 1; $($rest),*);
-//     };
-//     ($($names:ident),+) => {
-//         #[derive(Debug, Clone, Copy)]
-//         pub struct OpCode;
-//         impl OpCode {
-//             generate_opcode!(0; $($names),*);
-//         }
-//     };
-// }
-// generate_opcode!(
-//     CONST_BYTE,
-//     CONST_WORD,
-//     USUB_INT,
-//     USUB_FLT,
-//     BITNOT_INT,
-//     NOT_INT,
-//     NOT_BOOL,
-//     ADD_INT,
-//     ADD_FLT,
-//     SUB_INT,
-//     SUB_FLT,
-//     MUL_INT,
-//     MUL_FLT,
-//     DIV_INT,
-//     DIV_FLT,
-//     EQ_WORD,
-//     EQ_BOOL,
-//     MOD_INT,
-//     GET_VAR,
-//     SET_VAR,
-//     JUMP,
-//     POP_JUMP_IF_FALSE,
-//     LOOP,
-
-//     CALL_FN,
-//     RETURN,
-//     POP,
-//     VALUE_POP,
-//     EOF
-// );
-
 #[derive(Debug, EnumDiscriminants, Copy, Clone, Display)]
 #[strum_discriminants(name(OpCode), derive(FromRepr, Display), repr(u8))]
 pub enum FullOpCode {
@@ -61,7 +15,6 @@ pub enum FullOpCode {
     UsubInt,
     UsubFLt,
     BitnotInt,
-    NotInt,
     NotBool,
     AddInt,
     AddFlt,
@@ -73,12 +26,20 @@ pub enum FullOpCode {
     DivFlt,
     EqWord,
     EqBool,
-    ModInt,
-    GetVar {
+    RemInt,
+    GetLocal {
         relative_index: u16,
         size: u16,
     },
-    SetVar {
+    SetLocal {
+        relative_index: u16,
+        size: u16,
+    },
+    GetGlobal {
+        relative_index: u16,
+        size: u16,
+    },
+    SetGlobal {
         relative_index: u16,
         size: u16,
     },
@@ -118,7 +79,6 @@ impl FullOpCode {
             FullOpCode::UsubInt
             | FullOpCode::UsubFLt
             | FullOpCode::BitnotInt
-            | FullOpCode::NotInt
             | FullOpCode::NotBool
             | FullOpCode::AddInt
             | FullOpCode::AddFlt
@@ -130,15 +90,29 @@ impl FullOpCode {
             | FullOpCode::DivFlt
             | FullOpCode::EqWord
             | FullOpCode::EqBool
-            | FullOpCode::ModInt => {}
-            FullOpCode::GetVar {
+            | FullOpCode::RemInt => {}
+            FullOpCode::GetLocal {
                 relative_index,
                 size,
             } => {
                 result.extend_from_slice(&relative_index.to_ne_bytes());
                 result.extend_from_slice(&size.to_ne_bytes());
             }
-            FullOpCode::SetVar {
+            FullOpCode::SetLocal {
+                relative_index,
+                size,
+            } => {
+                result.extend_from_slice(&relative_index.to_ne_bytes());
+                result.extend_from_slice(&size.to_ne_bytes());
+            }
+            FullOpCode::GetGlobal {
+                relative_index,
+                size,
+            } => {
+                result.extend_from_slice(&relative_index.to_ne_bytes());
+                result.extend_from_slice(&size.to_ne_bytes());
+            }
+            FullOpCode::SetGlobal {
                 relative_index,
                 size,
             } => {
@@ -190,12 +164,14 @@ pub struct JumpInfo {
 
 pub struct BytecodeConstructer {
     assembler: BytecodeAssembler,
+    pub has_main_compiled: bool,
 }
 
 impl BytecodeConstructer {
     pub fn new() -> Self {
         Self {
             assembler: BytecodeAssembler::new(),
+            has_main_compiled: false,
         }
     }
     pub fn finish(&mut self) -> Bytecode {
@@ -276,45 +252,71 @@ impl BytecodeConstructer {
         &mut self,
         stack_index: usize,
         size: u16,
+        is_global: bool,
         pos: Pos,
     ) -> Result<(), ZeptwoError> {
         if stack_index > u16::MAX as usize {
-            Err(ZeptwoError::compiler_error_at_line(
+            Err(ZeptwoError::compiler_error_at_pos(
                 pos,
                 "Stack is too large. Can't access variable.",
             ))?;
         }
-        self.assembler.add_opcode(
-            FullOpCode::GetVar {
-                relative_index: stack_index.try_into().unwrap(),
-                size,
-            },
-            pos,
-        );
+        if is_global {
+            self.assembler.add_opcode(
+                FullOpCode::GetGlobal {
+                    relative_index: stack_index.try_into().unwrap(),
+                    size,
+                },
+                pos,
+            );
+        }
+        else {
+            self.assembler.add_opcode(
+                FullOpCode::GetLocal {
+                    relative_index: stack_index.try_into().unwrap(),
+                    size,
+                },
+                pos,
+            );
+        }
         Ok(())
     }
     pub fn set_variable(
         &mut self,
         stack_index: usize,
         size: u16,
+        is_global: bool,
         pos: Pos,
     ) -> Result<(), ZeptwoError> {
         if stack_index > u16::MAX as usize {
-            Err(ZeptwoError::compiler_error_at_line(
+            Err(ZeptwoError::compiler_error_at_pos(
                 pos,
                 "Stack is too large. Can't access variable.",
             ))?;
         }
-        self.assembler.add_opcode(
-            FullOpCode::SetVar {
-                relative_index: stack_index.try_into().unwrap(),
-                size,
-            },
-            pos,
-        );
+        if is_global {
+            self.assembler.add_opcode(
+                FullOpCode::SetGlobal {
+                    relative_index: stack_index.try_into().unwrap(),
+                    size,
+                },
+                pos,
+            );
+        }
+        else {
+            self.assembler.add_opcode(
+                FullOpCode::SetLocal {
+                    relative_index: stack_index.try_into().unwrap(),
+                    size,
+                },
+                pos,
+            );
+        }
+        
         Ok(())
     }
-    pub fn emit_main_call(&mut self) {
+    pub fn emit_main_call(&mut self) -> usize {
+        let opcode_start = self.next_instruction_index();
         self.assembler.add_opcode(
             FullOpCode::CallFn {
                 stack_offset_offset: 0,
@@ -322,11 +324,12 @@ impl BytecodeConstructer {
             },
             Pos::new(0),
         );
+        opcode_start
     }
-    pub fn patch_main_call(&mut self, addr: usize) -> Result<(), ZeptwoError> {
+    pub fn patch_main_call(&mut self, call_index: usize, addr: usize) -> Result<(), ZeptwoError> {
         let addr = {
             if addr > u32::MAX as usize {
-                Err(ZeptwoError::compiler_error_at_line(
+                Err(ZeptwoError::compiler_error_at_pos(
                     Pos::new(0),
                     "Can't call main function.",
                 ))?
@@ -334,7 +337,7 @@ impl BytecodeConstructer {
                 addr as u32
             }
         };
-        let mut instruction = self.assembler.get_instruction_at_byte_index(0);
+        let mut instruction = self.assembler.get_instruction_at_byte_index(call_index);
         match &mut instruction.instruction {
             FullOpCode::CallFn {
                 address, ..
@@ -342,6 +345,7 @@ impl BytecodeConstructer {
             _ => unreachable!(),
         }
         self.assembler.update_bytecode(instruction)?;
+        self.has_main_compiled = true;
         Ok(())
     }
     
@@ -355,7 +359,7 @@ impl BytecodeConstructer {
         let jump_size = self.next_instruction_index() - jump_info.jump_start;
 
         if jump_size > u16::MAX as usize {
-            Err(ZeptwoError::compiler_error_at_line(
+            Err(ZeptwoError::compiler_error_at_pos(
                 self.assembler.last_pos(),
                 "Branch is too big to jump over.",
             ))?;
@@ -376,7 +380,7 @@ impl BytecodeConstructer {
 
         let jump_offset = self.next_instruction_index() - loop_start;
         if jump_offset > u16::MAX as usize {
-            Err(ZeptwoError::compiler_error_at_line(
+            Err(ZeptwoError::compiler_error_at_pos(
                 self.assembler.last_pos(),
                 "Loop body is too large.",
             ))?;
@@ -524,7 +528,6 @@ impl Bytecode {
             OpCode::UsubInt => FullOpCode::UsubInt,
             OpCode::UsubFLt => FullOpCode::UsubFLt,
             OpCode::BitnotInt => FullOpCode::BitnotInt,
-            OpCode::NotInt => FullOpCode::NotInt,
             OpCode::NotBool => FullOpCode::NotBool,
             OpCode::AddInt => FullOpCode::AddInt,
             OpCode::AddFlt => FullOpCode::AddFlt,
@@ -536,12 +539,20 @@ impl Bytecode {
             OpCode::DivFlt => FullOpCode::DivFlt,
             OpCode::EqWord => FullOpCode::EqWord,
             OpCode::EqBool => FullOpCode::EqBool,
-            OpCode::ModInt => FullOpCode::ModInt,
-            OpCode::GetVar => FullOpCode::GetVar {
+            OpCode::RemInt => FullOpCode::RemInt,
+            OpCode::GetLocal => FullOpCode::GetLocal {
                 relative_index: self.read_u16(index),
                 size: self.read_u16(index),
             },
-            OpCode::SetVar => FullOpCode::GetVar {
+            OpCode::SetLocal => FullOpCode::GetLocal {
+                relative_index: self.read_u16(index),
+                size: self.read_u16(index),
+            },
+            OpCode::GetGlobal => FullOpCode::GetLocal {
+                relative_index: self.read_u16(index),
+                size: self.read_u16(index),
+            },
+            OpCode::SetGlobal => FullOpCode::GetLocal {
                 relative_index: self.read_u16(index),
                 size: self.read_u16(index),
             },
@@ -590,7 +601,6 @@ impl Bytecode {
             OpCode::UsubInt => Bytecode::simple_instruction("USUB_INT", i),
             OpCode::UsubFLt => Bytecode::simple_instruction("USUB_FLT", i),
             OpCode::BitnotInt => Bytecode::simple_instruction("BITNOT_INT", i),
-            OpCode::NotInt => Bytecode::simple_instruction("NOT_INT", i),
             OpCode::NotBool => Bytecode::simple_instruction("NOT_BOOL", i),
             OpCode::AddInt => Bytecode::simple_instruction("ADD_INT", i),
             OpCode::AddFlt => Bytecode::simple_instruction("ADD_FLT", i),
@@ -600,11 +610,13 @@ impl Bytecode {
             OpCode::MulFlt => Bytecode::simple_instruction("MUL_FLT", i),
             OpCode::DivInt => Bytecode::simple_instruction("DIV_INT", i),
             OpCode::DivFlt => Bytecode::simple_instruction("DIV_FLT", i),
-            OpCode::ModInt => Bytecode::simple_instruction("MOD_INT", i),
+            OpCode::RemInt => Bytecode::simple_instruction("REM_INT", i),
             OpCode::EqWord => Bytecode::simple_instruction("EQ_WORD", i),
             OpCode::EqBool => Bytecode::simple_instruction("EQ_BOOL", i),
-            OpCode::GetVar => self.u16_u16_instruction("GET_VAR", i),
-            OpCode::SetVar => self.u16_u16_instruction("SET_VAR", i),
+            OpCode::GetLocal => self.u16_u16_instruction("GET_LOCAL", i),
+            OpCode::SetLocal => self.u16_u16_instruction("SET_LOCAL", i),
+            OpCode::GetGlobal => self.u16_u16_instruction("GET_GLOBAL", i),
+            OpCode::SetGlobal => self.u16_u16_instruction("SET_GLOBAL", i),
             OpCode::PopJumpIfFalse => self.u16_instruction("POP_JUMP_IF_FALSE", i),
             OpCode::Jump => self.u16_instruction("JUMP", i),
             OpCode::Loop => self.u16_instruction("LOOP", i),

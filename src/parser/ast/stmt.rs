@@ -3,7 +3,7 @@ use crate::position::{Pos, Position};
 use super::{expr::*, identifiers::*, *};
 
 pub trait CheckTypes {
-    fn check_types(&mut self, lookup: &mut IdentifierLookup) -> Result<(), ZeptwoError>;
+    fn check_types(&mut self, lookup: &mut IdentifierLookup, dependencies: &mut Vec<DependencyID>) -> Result<(), ZeptwoError>;
 }
 
 #[derive(Debug, Clone)]
@@ -45,15 +45,15 @@ impl Position for Stmt {
 }
 
 impl CheckTypes for Stmt {
-    fn check_types(&mut self, lookup: &mut IdentifierLookup) -> Result<(), ZeptwoError> {
+    fn check_types(&mut self, lookup: &mut IdentifierLookup, dependencies: &mut Vec<DependencyID>) -> Result<(), ZeptwoError> {
         match self {
             Self::While {
                 condition, body, ..
             } => {
-                let condition_type = condition.determine_type_and_opcode(lookup)?.clone();
+                let condition_type = condition.determine_type_and_opcode(lookup, dependencies)?.clone();
                 if let ValType::Bool = condition_type {
                 } else {
-                    Err(ZeptwoError::parser_error_at_line(
+                    Err(ZeptwoError::parser_error_at_pos(
                         condition.right_pos(lookup),
                         format!(
                             "Expected type '{}' from condition. Found '{}'",
@@ -63,12 +63,12 @@ impl CheckTypes for Stmt {
                     ))?;
                 }
                 for stmt in body {
-                    stmt.check_types(lookup)?;
+                    stmt.check_types(lookup, dependencies)?;
                 }
                 Ok(())
             }
             Stmt::Let { var_id, expr } => {
-                let expr_type = expr.determine_type_and_opcode(lookup)?;
+                let expr_type = expr.determine_type_and_opcode(lookup, dependencies)?;
 
                 let var_type = var_id.get_variable_type(lookup);
                 match var_type {
@@ -87,11 +87,11 @@ impl CheckTypes for Stmt {
                 Ok(())
             }
             Stmt::Return { expr, .. } => {
-                expr.determine_type_and_opcode(lookup)?;
+                expr.determine_type_and_opcode(lookup, dependencies)?;
                 Ok(())
             }
             Stmt::Expr { expr, .. } => {
-                expr.determine_type_and_opcode(lookup)?;
+                expr.determine_type_and_opcode(lookup, dependencies)?;
                 Ok(())
             }
         }

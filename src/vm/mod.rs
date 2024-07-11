@@ -1,5 +1,4 @@
 pub mod bytecode;
-use crate::errors::echo;
 
 use self::bytecode::OpCode;
 use bytecode::Bytecode;
@@ -74,10 +73,6 @@ impl VM {
                     //TODO: FIX SAME OPCODe
                     unary_operation!(VMINT_SIZE, VMInt, !);
                 }
-                OpCode::NotInt => {
-                    //TODO: FIX SAME OPCODe
-                    unary_operation!(VMINT_SIZE, VMInt, !);
-                }
                 OpCode::NotBool => {
                     let a = self.pop_byte() != 0;
                     self.push_byte((!a) as u8);
@@ -94,7 +89,7 @@ impl VM {
                 OpCode::DivInt => {
                     binary_operation!(VMINT_SIZE, VMInt, /);
                 }
-                OpCode::ModInt => {
+                OpCode::RemInt => {
                     binary_operation!(VMINT_SIZE, VMInt, %);
                 }
                 OpCode::AddFlt => {
@@ -119,14 +114,27 @@ impl VM {
                     let a = self.pop_byte();
                     self.push_byte((a == b) as u8)
                 }
-                OpCode::GetVar => {
+                OpCode::GetLocal => {
                     let stack_index = (self.read_u16() as usize) + self.stack_offset();
                     let size = self.read_u16() as usize;
                     let var = self.stack[stack_index..stack_index + size].to_vec();
                     self.push_ref(&var);
                 }
-                OpCode::SetVar => {
+                OpCode::SetLocal => {
                     let stack_index = self.read_u16() as usize + self.stack_offset();
+                    let size = self.read_u16() as usize;
+
+                    let data = self.stack[self.stack_top - size..self.stack_top].to_vec();
+                    self.stack[stack_index..stack_index + size].copy_from_slice(data.as_slice());
+                }
+                OpCode::GetGlobal => {
+                    let stack_index = self.read_u16() as usize;
+                    let size = self.read_u16() as usize;
+                    let var = self.stack[stack_index..stack_index + size].to_vec();
+                    self.push_ref(&var);
+                }
+                OpCode::SetGlobal => {
+                    let stack_index = self.read_u16() as usize;
                     let size = self.read_u16() as usize;
 
                     let data = self.stack[self.stack_top - size..self.stack_top].to_vec();
@@ -151,10 +159,13 @@ impl VM {
                 OpCode::CallFn => {
                     let stack_offset_offset = self.read_u16() as usize;
                     let address = self.read_u32() as usize;
-                    self.call_stack[self.call_stack_top] = StackFrame {
-                        return_address: self.ip,
-                        stack_offset: self.stack_top - stack_offset_offset,
-                    };
+                    match self.call_stack.get_mut(self.call_stack_top) {
+                        Some(frame) => *frame = StackFrame {
+                            return_address: self.ip,
+                            stack_offset: self.stack_top - stack_offset_offset,
+                        },
+                        None => Err(ZeptwoError::runtime_error("Call stack overflow."))?,
+                    }
                     self.call_stack_top += 1;
                     self.ip = address;
                 }
