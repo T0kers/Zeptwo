@@ -312,9 +312,6 @@ impl Compile for Expr {
                 bytecode.get_variable(stack_index, data_type.get_result_size(lookup), is_global, *line)?;
             }
             Expr::UnresolvedIdentifier { .. } => unreachable!(),
-            Expr::Nothing => {
-                println!("Compiling nothing expr, doing nothing.")
-            }
         }
         Ok(())
     }

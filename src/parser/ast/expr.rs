@@ -357,9 +357,15 @@ pub enum Expr {
     UnresolvedIdentifier {
         pos: Pos,
         lexeme: &'static str,
-        args: Option<Vec<Expr>>,
+        kind: UnresolvedKind,
     },
-    Nothing,
+}
+
+#[derive(Debug, Clone)]
+pub enum UnresolvedKind {
+    Function(Vec<Expr>),
+    Assignment(Box<Expr>),
+    Variable,
 }
 
 impl Expr {
@@ -428,32 +434,30 @@ impl Position for Expr {
             Expr::Value { pos, .. } => *pos,
             Expr::Variable { pos, .. } => *pos,
             Expr::UnresolvedIdentifier { pos, .. } => *pos,
-            Expr::Nothing => panic!(),
         }
     }
-    fn right_pos(&self, lookup: &IdentifierLookup) -> Pos {
+    fn right_pos(&self, _lookup: &IdentifierLookup) -> Pos {
         match self {
-            Expr::Block { value, .. } => value.right_pos(lookup),
+            Expr::Block { value, .. } => value.right_pos(_lookup),
             Expr::If {
                 then_branch,
                 else_branch,
                 ..
             } => {
                 if let Some(else_branch) = else_branch {
-                    else_branch.right_pos(lookup)
+                    else_branch.right_pos(_lookup)
                 } else {
-                    then_branch.right_pos(lookup)
+                    then_branch.right_pos(_lookup)
                 }
             }
-            Expr::FnCall { args, .. } => args.last().unwrap().right_pos(lookup),
-            Expr::AmbiguousFnCall { args, .. } => args.last().unwrap().right_pos(lookup),
-            Expr::Assignment { node, .. } => node.right_pos(lookup),
-            Expr::Unary { node, .. } => node.right_pos(lookup),
-            Expr::Binary { rhs, .. } => rhs.right_pos(lookup),
+            Expr::FnCall { args, .. } => args.last().unwrap().right_pos(_lookup),
+            Expr::AmbiguousFnCall { args, .. } => args.last().unwrap().right_pos(_lookup),
+            Expr::Assignment { node, .. } => node.right_pos(_lookup),
+            Expr::Unary { node, .. } => node.right_pos(_lookup),
+            Expr::Binary { rhs, .. } => rhs.right_pos(_lookup),
             Expr::Value { pos, .. } => *pos,
             Expr::Variable { pos, .. } => *pos,
             Expr::UnresolvedIdentifier { pos, .. } => *pos,
-            Expr::Nothing => panic!(),
         }
     }
 }
@@ -471,7 +475,6 @@ impl ValTypeTrait for Expr {
             Expr::Value { value, .. } => value.get_type(lookup),
             Expr::Variable { id, .. } => id.get_variable_type(lookup),
             Expr::UnresolvedIdentifier { .. } => None,
-            Expr::Nothing => panic!(),
         }
     }
     fn determine_type_and_opcode(
@@ -720,32 +723,40 @@ impl ValTypeTrait for Expr {
                     }
                     Expr::Value { .. } => {}
                     Expr::Variable { .. } => {}
-                    Expr::UnresolvedIdentifier { pos, lexeme, args } => {
+                    Expr::UnresolvedIdentifier { pos, lexeme, kind: info } => {
                         match lookup.acquire_identifier_id(lexeme) {
                             Some(IdentifierID::Var(id)) => {
-                                match args {
-                                    Some(_) => {
-                                        Err(ZeptwoError::parser_error_at_pos(*pos, format!("Can't call variable '{}'.", lexeme)))?
-                                    }
-                                    None => {
-                                        *self = Expr::Variable { id, pos: *pos };
+                                match info {
+                                    UnresolvedKind::Function(args) => {
+                                        todo!()
+                                    },
+                                    UnresolvedKind::Assignment(expr) => {
+                                        *self = Expr::Assignment { var_id: id, node: expr.clone() };
                                         self.determine_type_and_opcode(lookup, dependencies)?;
                                     },
+                                    UnresolvedKind::Variable => {
+                                        *self = Expr::Variable { id, pos: *pos };
+                                        self.determine_type_and_opcode(lookup, dependencies)?;
+                                    }
                                 }
                             },
                             Some(IdentifierID::Func(id)) => {
-                                match args.clone() {
-                                    Some(args) => {
-                                        *self = Expr::AmbiguousFnCall { callee: id, args, pos: *pos };
+                                match info {
+                                    UnresolvedKind::Function(args) => {
+                                        *self = Expr::AmbiguousFnCall { callee: id, args: args.clone(), pos: *pos };
                                         self.determine_type_and_opcode(lookup, dependencies)?;
+                                    },
+                                    UnresolvedKind::Assignment(..) => {
+                                        todo!()
+                                    },
+                                    UnresolvedKind::Variable => {
+                                        todo!()
                                     }
-                                    None => Err(ZeptwoError::parser_error_at_pos(*pos, format!("Missing arguments to function '{}'.", lexeme)))?, // todo: make into expression.
                                 }
                             },
                             None => Err(ZeptwoError::parser_error_at_pos(*pos, format!("Could not find definition to identifier '{}'.", lexeme)))?,
                         }
                     }
-                    Expr::Nothing => panic!(),
                 }
                 match self.get_type(lookup) {
                     Some(v) => Ok(v),
@@ -853,7 +864,6 @@ impl SizeAndIndex for Expr {
                 .unwrap()
                 .get_result_size(lookup) as usize),
             Expr::UnresolvedIdentifier { .. } => unreachable!(),
-            Expr::Nothing => Ok(0),
         }
     }
 }

@@ -2,10 +2,10 @@
 let a = 2;
 
 fn main(): Int {
-    foo();
+    is_zero = 2;
     a
 }
 
-fn foo() {
-    a = 5;
+fn is_zero(a: Int): Bool {
+    a == 0
 }

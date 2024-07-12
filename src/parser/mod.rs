@@ -4,7 +4,7 @@ use ast::{
     stmt::Stmt,
     *,
 };
-use expr::ValTypeTrait;
+use expr::{UnresolvedKind, ValTypeTrait};
 use identifiers::{IdentifierID, IdentifierLookup};
 
 use crate::{errors::ZeptwoError, position::Position};
@@ -308,14 +308,13 @@ impl Parser {
     fn parse_precedence(&mut self, prec: Precedence) -> Result<Expr, ZeptwoError> {
         self.advance()?;
 
-        let mut lhs = Expr::Nothing;
-
         let can_assign = prec <= Precedence::Assignment;
-        if let Some(prefix_rule) = self.get_rule(&self.previous.kind).prefix {
-            lhs = prefix_rule(self, can_assign)?;
+        let mut lhs = if let Some(prefix_rule) = self.get_rule(&self.previous.kind).prefix {
+            prefix_rule(self, can_assign)?
         } else {
             self.error("Expected expression.")?;
-        }
+            unreachable!()
+        };
         while prec <= self.get_rule(&self.current.kind).precedence {
             self.advance()?;
             if let Some(infix_rule) = self.get_rule(&self.previous.kind).infix {
@@ -476,7 +475,11 @@ impl Parser {
                 }
             }
             None => {
-                if self.compare(TokenKind::LParen)? { // todo: make into function so no code repetition
+                if can_assign && self.compare(TokenKind::Equal)? {
+                    let expr = self.expression()?;
+                    Ok(Expr::UnresolvedIdentifier { pos: self.previous.pos, lexeme, kind: UnresolvedKind::Assignment(Box::new(expr)) })
+                }
+                else if self.compare(TokenKind::LParen)? { // todo: make into function so no code repetition
                     let mut args = vec![];
                     while !self.compare(TokenKind::RParen)? {
                         args.push(self.expression()?);
@@ -489,10 +492,11 @@ impl Parser {
                             break;
                         }
                     }
-                    Ok(Expr::UnresolvedIdentifier { pos: self.previous.pos, lexeme, args: Some(args) })
-                } else {
+                    Ok(Expr::UnresolvedIdentifier { pos: self.previous.pos, lexeme, kind: UnresolvedKind::Function(args) })
+                }
+                else {
                     Ok(Expr::UnresolvedIdentifier {
-                        pos: self.previous.pos, lexeme, args: None,
+                        pos: self.previous.pos, lexeme, kind: UnresolvedKind::Variable,
                     })
                 }
             }
